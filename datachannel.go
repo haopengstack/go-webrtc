@@ -9,6 +9,7 @@ package webrtc
 /*
 #cgo CXXFLAGS: -std=c++0x
 #cgo LDFLAGS: -L${SRCDIR}/lib
+#cgo linux,arm pkg-config: webrtc-linux-arm.pc
 #cgo linux,386 pkg-config: webrtc-linux-386.pc
 #cgo linux,amd64 pkg-config: webrtc-linux-amd64.pc
 #cgo darwin,amd64 pkg-config: webrtc-darwin-amd64.pc
@@ -29,10 +30,13 @@ const (
 	DataStateClosed
 )
 
-var DataStateString = []string{"Connecting", "Open", "Closing", "Closed"}
-
 func (s DataState) String() string {
-	return EnumToStringSafe(int(s), DataStateString)
+	return EnumToStringSafe(int(s), []string{
+		"Connecting",
+		"Open",
+		"Closing",
+		"Closed",
+	})
 }
 
 var DCMap = NewCGOMap()
@@ -54,8 +58,9 @@ type DataChannel struct {
 	OnMessage           func([]byte) // byte slice.
 	OnBufferedAmountLow func()
 
-	cgoChannel C.CGO_Channel // Internal DataChannel functionality.
-	index      int           // Index into the DCMap
+	cgoChannel         C.CGO_Channel // Internal DataChannel functionality.
+	cgoChannelObserver unsafe.Pointer
+	index              int // Index into the DCMap
 }
 
 // Create a Go Channel struct, and prepare internal CGO references / observers.
@@ -70,14 +75,32 @@ func NewDataChannel(o unsafe.Pointer) *DataChannel {
 	c.BinaryType = "blob"
 	cgoChannel := C.CGO_Channel_RegisterObserver(o, C.int(c.index))
 	c.cgoChannel = (C.CGO_Channel)(cgoChannel)
+	c.cgoChannelObserver = o
 	return c
 }
 
+func deleteDataChannel(index int) {
+	DCMap.Delete(index)
+	return
+}
+
+// Send a message over a DataChannel in binary mode.
 func (c *DataChannel) Send(data []byte) {
+	c.sendInternal(data, true)
+}
+
+// SendText sends a message over the DataChannel in text mode.
+func (c *DataChannel) SendText(text string) {
+	if len(text) > 0 {
+		c.sendInternal([]byte(text), false)
+	}
+}
+
+func (c *DataChannel) sendInternal(data []byte, binary bool) {
 	if nil == data {
 		return
 	}
-	C.CGO_Channel_Send(c.cgoChannel, unsafe.Pointer(&data[0]), C.int(len(data)))
+	C.CGO_Channel_Send(c.cgoChannel, unsafe.Pointer(&data[0]), C.int(len(data)), C.bool(binary))
 }
 
 func (c *DataChannel) Close() error {
@@ -125,15 +148,13 @@ func (c *DataChannel) BufferedAmount() int {
 	return int(C.CGO_Channel_BufferedAmount(c.cgoChannel))
 }
 
-// TODO: Variadic options constructor, probably makes more sense for
-// CreateDataChannel in parent package PeerConnection.
-type Init struct {
+type DataChannelInit struct {
 	Ordered           bool
-	MaxPacketLifeTime uint
-	MaxRetransmits    uint
+	MaxPacketLifeTime int
+	MaxRetransmits    int
 	Protocol          string
 	Negotiated        bool
-	ID                uint
+	ID                int
 }
 
 //

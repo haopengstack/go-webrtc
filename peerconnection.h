@@ -18,6 +18,15 @@ extern "C" {
   typedef const char* CGO_sdpString;
 
   typedef struct {
+    int ordered;
+    int maxPacketLifeTime;
+    int maxRetransmits;
+    char *protocol;
+    int negotiated;
+    int id;
+  } CGO_DataChannelInit;
+
+  typedef struct {
     char **urls;
     int   numUrls;
 
@@ -44,6 +53,7 @@ extern "C" {
   } CGO_IceCandidate;
 
   CGO_Peer CGO_InitializePeer(int pc);
+  void CGO_DestroyPeer(CGO_Peer);
 
   // Below are "C methods" for the Peer class, which must be hidden from cgo.
 
@@ -66,7 +76,8 @@ extern "C" {
   int CGO_IceGatheringState(CGO_Peer);
   int CGO_SetConfiguration(CGO_Peer, CGO_Configuration*);
 
-  void* CGO_CreateDataChannel(CGO_Peer, char*, void*);
+  void* CGO_CreateDataChannel(CGO_Peer, char*, CGO_DataChannelInit);
+  void CGO_DeleteDataChannel(CGO_Peer, void* l);
 
   void CGO_Close(CGO_Peer);
 

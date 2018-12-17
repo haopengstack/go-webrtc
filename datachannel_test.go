@@ -1,9 +1,10 @@
 package webrtc
 
 import (
-	. "github.com/smartystreets/goconvey/convey"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestDataStateEnums(t *testing.T) {
@@ -29,7 +30,7 @@ func TestDataStateEnums(t *testing.T) {
 		So(c.MaxRetransmits(), ShouldEqual, 0)
 		So(c.Negotiated(), ShouldBeFalse)
 		So(c.ID(), ShouldEqual, 12345)
-		So(c.BufferedAmount(), ShouldEqual, 0)
+		So(c.BufferedAmount(), ShouldEqual, 1234)
 
 		// There's not a good way to create a DataChannel without first having an
 		// available PeerConnection object with a valid session, but that's part of
@@ -85,9 +86,11 @@ func TestDataStateEnums(t *testing.T) {
 				cgoFakeStateChange(c, DataStateConnecting)
 				cgoFakeStateChange(c, DataStateClosing)
 
-				So(func() {
-					cgoFakeStateChange(c, 999)
-				}, ShouldPanic)
+				// Disabled until https://github.com/golang/go/issues/16150 is fixed.
+				// See the discussion in https://github.com/keroserene/go-webrtc/issues/95
+				// So(func() {
+				// 	cgoFakeStateChange(c, 999)
+				// }, ShouldPanic)
 			})
 
 			Convey("OnBufferedAmountLow", func() {
@@ -122,6 +125,29 @@ func TestDataStateEnums(t *testing.T) {
 				t.Fatal("Timed out.")
 			}
 			c.Send(nil)
+			select {
+			case <-messages:
+				t.Fatal("Unexpected message when sending nil.")
+			case <-time.After(time.Second * 1):
+			}
+		})
+
+		Convey("SendText", func() {
+			messages := make(chan []byte, 1)
+			text := "Hello, 世界"
+			// Fake data channel routes send to its own onmessage.
+			c.OnMessage = func(msg []byte) {
+				messages <- msg
+			}
+			c.SendText(text)
+			select {
+			case recv := <-messages:
+				So(c.OnMessage, ShouldNotBeNil)
+				So(recv, ShouldResemble, []byte(text))
+			case <-time.After(time.Second * 1):
+				t.Fatal("Timed out.")
+			}
+			c.SendText("")
 			select {
 			case <-messages:
 				t.Fatal("Unexpected message when sending nil.")

@@ -7,15 +7,15 @@
  */
 package main
 
-import "C"
 import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"github.com/keroserene/go-webrtc"
 	"os"
 	"os/signal"
 	"strings"
+
+	"github.com/keroserene/go-webrtc"
 )
 
 var pc *webrtc.PeerConnection
@@ -150,7 +150,7 @@ func endChat() {
 func sendChat(msg string) {
 	line := username + ": " + msg
 	fmt.Println("[sent]")
-	dc.Send([]byte(line))
+	dc.SendText(line)
 }
 
 func receiveChat(msg string) {
@@ -169,8 +169,8 @@ func parseCommands(input string) bool {
 		dc.Close()
 	case "status":
 		fmt.Println("WebRTC PeerConnection Configuration:\n", pc.GetConfiguration())
-		fmt.Println("Signaling State: ", pc.SignalingState().String())
-		fmt.Println("Connection State: ", pc.ConnectionState().String())
+		fmt.Println("Signaling State: ", pc.SignalingState())
+		fmt.Println("Connection State: ", pc.ConnectionState())
 	case "help":
 		showCommands()
 	default:
@@ -217,7 +217,7 @@ func start(instigator bool) {
 	}
 	/*
 		pc.OnIceGatheringStateChange = func(state webrtc.IceGatheringState) {
-			fmt.Println("Ice Gathering State:", webrtc.IceGatheringStateString[state])
+			fmt.Println("Ice Gathering State:", state)
 			if webrtc.IceGatheringStateComplete == state {
 				// send local description.
 			}
@@ -234,7 +234,7 @@ func start(instigator bool) {
 	if instigator {
 		// Attempting to create the first datachannel triggers ICE.
 		fmt.Println("Initializing datachannel....")
-		dc, err = pc.CreateDataChannel("test", webrtc.Init{})
+		dc, err = pc.CreateDataChannel("test")
 		if nil != err {
 			fmt.Println("Unexpected failure creating Channel.")
 			return
@@ -273,7 +273,7 @@ func main() {
 	}()
 
 	// Input loop.
-	for true {
+	for {
 		text, _ := reader.ReadString('\n')
 		switch mode {
 		case ModeInit:
@@ -292,7 +292,6 @@ func main() {
 			// fmt.Print(username + ": ")
 			break
 		}
-		text = ""
 	}
 	<-wait
 	fmt.Println("done")

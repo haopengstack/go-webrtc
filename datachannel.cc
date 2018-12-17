@@ -12,10 +12,10 @@ CGO_Channel CGO_Channel_RegisterObserver(void *o, int goChannel) {
   return obs->dc.get();
 }
 
-void CGO_Channel_Send(CGO_Channel channel, void *data, int size) {
+void CGO_Channel_Send(CGO_Channel channel, void *data, int size, bool binary) {
   auto dc = (webrtc::DataChannelInterface*)channel;
   auto bytes = rtc::CopyOnWriteBuffer((uint8_t*)data, size);
-  auto buffer = DataBuffer(bytes, true);
+  auto buffer = DataBuffer(bytes, binary);
   dc->Send(buffer);
 }
 
@@ -111,8 +111,24 @@ class FakeDataChannel : public DataChannelInterface {
     return state_;
   };
 
+  virtual uint32_t messages_sent() const {
+    return 1234;
+  };
+
+  virtual uint64_t bytes_sent() const {
+    return 1234;
+  };
+
+  virtual uint32_t messages_received() const {
+    return 1234;
+  };
+
+  virtual uint64_t bytes_received() const {
+    return 1234;
+  };
+
   virtual uint64_t buffered_amount() const {
-    return 0;
+    return 1234;
   };
 
   // Sends data to self.
@@ -139,12 +155,13 @@ class FakeDataChannel : public DataChannelInterface {
   DataState state_ = DataState::kClosed;
 };
 
-rtc::scoped_refptr<CGoDataChannelObserver> test_observer;
+std::vector<rtc::scoped_refptr<CGoDataChannelObserver>> test_observers;
 
 void* CGO_getFakeDataChannel() {
   rtc::scoped_refptr<FakeDataChannel> test_dc = new rtc::RefCountedObject<FakeDataChannel>();
-  test_observer = new rtc::RefCountedObject<CGoDataChannelObserver>(test_dc);
-  auto o = test_observer.get();
+  rtc::scoped_refptr<CGoDataChannelObserver> to = new rtc::RefCountedObject<CGoDataChannelObserver>(test_dc);
+  test_observers.push_back(to);
+  auto o = to.get();
   test_dc->RegisterObserver(o);
   return (void *)o;
 }

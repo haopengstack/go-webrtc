@@ -10,8 +10,6 @@
  */
 package main
 
-// #cgo LDFLAGS: -L../lib
-import "C"
 import (
 	"fmt"
 	"github.com/keroserene/go-webrtc"
@@ -28,7 +26,7 @@ func main() {
 	)
 
 	// You can also add IceServers at a different point.
-	config.AddIceServer("turn:and.another.server")
+	config.AddIceServer("stun:and.another.server")
 
 	alice, err1 := webrtc.NewPeerConnection(config)
 	bob, err2 := webrtc.NewPeerConnection(config)

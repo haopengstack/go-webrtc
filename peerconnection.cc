@@ -8,11 +8,14 @@
 
 #include <iostream>
 #include <future>
+#include <mutex>
 
-#include "webrtc/api/test/fakeconstraints.h"
-#include "webrtc/api/test/fakeaudiocapturemodule.h"
-#include "webrtc/api/jsepsessiondescription.h"
-#include "webrtc/api/webrtcsdp.h"
+#include "api/audio_codecs/builtin_audio_decoder_factory.h"
+#include "api/audio_codecs/builtin_audio_encoder_factory.h"
+#include "api/test/fakeconstraints.h"
+#include "pc/test/fakeaudiocapturemodule.h"
+#include "api/jsepsessiondescription.h"
+#include "pc/webrtcsdp.h"
 
 #define SUCCESS 0
 #define FAILURE -1
@@ -49,8 +52,8 @@ class Peer
     // Due to the different threading model, in order for PeerConnectionFactory
     // to be able to post async messages without getting blocked, we need to use
     // external signalling and worker thread, accounted for in this class.
-    signalling_thread_ = new rtc::Thread();
-    worker_thread_ = new rtc::Thread();
+    signalling_thread_ = std::unique_ptr<rtc::Thread>(new rtc::Thread());
+    worker_thread_ = std::unique_ptr<rtc::Thread>(new rtc::Thread());
     signalling_thread_->SetName("CGO Signalling", NULL);
     worker_thread_->SetName("CGO Worker", NULL);
     signalling_thread_->Start();  // Must start before being passed to
@@ -58,9 +61,12 @@ class Peer
 
     this->fake_audio_ = FakeAudioCaptureModule::Create();
     pc_factory = CreatePeerConnectionFactory(
-      worker_thread_,
-      signalling_thread_,
-      this->fake_audio_, NULL, NULL);
+      worker_thread_.get(),
+      signalling_thread_.get(),
+      this->fake_audio_,
+      CreateBuiltinAudioEncoderFactory(),
+      CreateBuiltinAudioDecoderFactory(),
+      NULL, NULL);
     if (!pc_factory.get()) {
       CGO_DBG("Could not create PeerConnectionFactory");
       return false;
@@ -105,10 +111,10 @@ class Peer
   }
 
   // This is required for the Media API.
-  void OnAddStream(webrtc::MediaStreamInterface* stream) {
+  void OnAddStream(rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) {
     CGO_DBG("unimplemented OnAddStream");
   }
-  void OnRemoveStream(webrtc::MediaStreamInterface* stream) {
+  void OnRemoveStream(rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) {
     CGO_DBG("unimplemented OnRemoveStream");
   }
 
@@ -147,9 +153,11 @@ class Peer
     cgoOnIceGatheringStateChange(goPeerConnection, new_state);
   }
 
-  void OnDataChannel(DataChannelInterface* channel) {
+  void OnDataChannel(rtc::scoped_refptr<DataChannelInterface> channel) {
     DCObserver obs = new rtc::RefCountedObject<CGoDataChannelObserver>(channel);
-    this->observers.push_back(obs);
+    o_lock.lock();
+    observers.push_back(obs);
+    o_lock.unlock();
     auto o = obs.get();
     channel->RegisterObserver(o);
     cgoOnDataChannel(goPeerConnection, (void *)o);
@@ -180,23 +188,36 @@ class Peer
   // Prevent deallocation of created DataChannels, since they are ref_ptr,
   // by keeping track of them in a vector.
   vector<DCObserver> observers;
+  std::mutex o_lock;
 
  protected:
   ~Peer() {
     SetConfig(NULL);
     if (constraints)
       delete constraints;
+
+    // NOTE: Clears these explicitly first since they use the threads
+    observers.clear();
+    pc_ = nullptr;
+    pc_factory = nullptr;
+
+    worker_thread_->Stop();
+    signalling_thread_->Stop();
+
+    worker_thread_ = nullptr;
+    signalling_thread_ = nullptr;
   }
 
  private:
-  rtc::Thread *signalling_thread_;
-  rtc::Thread *worker_thread_;
+  std::unique_ptr<rtc::Thread> signalling_thread_;
+  std::unique_ptr<rtc::Thread> worker_thread_;
   rtc::scoped_refptr<AudioDeviceModule> fake_audio_;
 };  // class Peer
 
 // Keep track of Peers in global scope to prevent deallocation, due to the
 // required scoped_refptr from implementing the Observer interface.
 vector<rtc::scoped_refptr<Peer>> localPeers;
+std::mutex lp_lock;
 
 class PeerSDPObserver : public SetSessionDescriptionObserver {
  public:
@@ -227,9 +248,23 @@ class PeerSDPObserver : public SetSessionDescriptionObserver {
 CGO_Peer CGO_InitializePeer(int goPc) {
   rtc::scoped_refptr<Peer> localPeer = new rtc::RefCountedObject<Peer>();
   localPeer->Initialize();
+  lp_lock.lock();
   localPeers.push_back(localPeer);
+  lp_lock.unlock();
   localPeer->goPeerConnection = goPc;
   return localPeer;
+}
+
+void CGO_DestroyPeer(CGO_Peer cgoPeer) {
+  auto cPeer = (Peer*)cgoPeer;
+  lp_lock.lock();
+  localPeers.erase(
+    std::remove_if(localPeers.begin(), localPeers.end(), [cPeer](rtc::scoped_refptr<Peer> localPeer){
+      return localPeer.get() == cPeer;
+    }),
+    localPeers.end()
+  );
+  lp_lock.unlock();
 }
 
 // This helper converts RTCConfiguration struct from GO to C++.
@@ -244,12 +279,12 @@ PeerConnectionInterface::RTCConfiguration *castConfig_(
   for (auto s : servers) {
     // cgo only allows C arrays, but webrtc expects std::vectors
     vector<string> urls(s.urls, s.urls + s.numUrls);
-    c->servers.push_back({
-      "",  // TODO: Remove once webrtc deprecates the first uri field.
-      urls,
-      s.username,
-      s.credential
-    });
+    PeerConnectionInterface::IceServer is {};
+    is.uri ="";  // TODO: Remove once webrtc deprecates the first uri field.
+    is.urls = urls;
+    is.username = s.username;
+    is.password = s.credential;
+    c->servers.push_back(is);
   }
 
   // Cast Go const "enums" to C++ Enums.
@@ -417,20 +452,25 @@ int CGO_IceGatheringState(CGO_Peer cgoPeer) {
 int CGO_SetConfiguration(CGO_Peer cgoPeer, CGO_Configuration* cgoConfig) {
   Peer *peer = (Peer*)cgoPeer;
   auto cConfig = castConfig_(cgoConfig);
-  bool success = peer->pc_->SetConfiguration(*cConfig);
+  webrtc::RTCError *error = new webrtc::RTCError();
+  bool success = peer->pc_->SetConfiguration(*cConfig, error);
   if (success) {
     peer->SetConfig(cConfig);
     return SUCCESS;
   }
-  return FAILURE;
+  return (int) error->type();
 }
 
 // PeerConnection::CreateDataChannel
-void* CGO_CreateDataChannel(CGO_Peer cgoPeer, char *label, void *dict) {
-  auto cPeer = (Peer*)cgoPeer;
-  DataChannelInit *r = (DataChannelInit*)dict;
-  // TODO: a real DataChannelInit config with correct fields.
+void* CGO_CreateDataChannel(CGO_Peer cgoPeer, char *label, CGO_DataChannelInit dict) {
   DataChannelInit config;
+  config.ordered = dict.ordered;
+  config.maxRetransmits = dict.maxRetransmits;
+  config.maxRetransmitTime = dict.maxPacketLifeTime;
+  config.negotiated = dict.negotiated;
+  config.id = dict.id;
+
+  auto cPeer = (Peer*)cgoPeer;
   std::string l(label);
   auto channel = cPeer->pc_->CreateDataChannel(l, &config);
   if (NULL == channel) {
@@ -438,7 +478,9 @@ void* CGO_CreateDataChannel(CGO_Peer cgoPeer, char *label, void *dict) {
     return NULL;
   }
   DCObserver obs = new rtc::RefCountedObject<CGoDataChannelObserver>(channel);
+  cPeer->o_lock.lock();
   cPeer->observers.push_back(obs);
+  cPeer->o_lock.unlock();
   auto o = obs.get();
   channel->RegisterObserver(o);
   return (void *)o;
@@ -451,6 +493,19 @@ void CGO_Close(CGO_Peer peer) {
   CGO_DBG("Closed PeerConnection.");
 }
 
+void CGO_DeleteDataChannel(CGO_Peer cgoPeer, void* l) {
+  auto cPeer = (Peer*)cgoPeer;
+  auto o = (CGoDataChannelObserver*)l;
+  auto observers = &cPeer->observers;
+  cPeer->o_lock.lock();
+  observers->erase(
+    std::remove_if(observers->begin(), observers->end(), [o](DCObserver obs){
+      return obs.get() == o;
+    }),
+    observers->end()
+  );
+  cPeer->o_lock.unlock();
+}
 
 //
 // Test helpers which fake native callbacks.

@@ -1,9 +1,10 @@
 package webrtc
 
 import (
-	. "github.com/smartystreets/goconvey/convey"
 	"testing"
 	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestIceGatheringStateEnums(t *testing.T) {
@@ -55,7 +56,10 @@ func TestPeerConnection(t *testing.T) {
 				config := NewConfiguration(
 					OptionIceServer("stun:something.else"),
 					OptionIceTransportPolicy(IceTransportPolicyRelay))
-				pc.SetConfiguration(*config)
+				So(config.IceTransportPolicy, ShouldEqual, IceTransportPolicyRelay)
+				// FIXME: Should be calling SetConfiguration here
+				pc, err = NewPeerConnection(config)
+				So(err, ShouldBeNil)
 				got := pc.GetConfiguration()
 				So(got.IceTransportPolicy, ShouldEqual, IceTransportPolicyRelay)
 			})
@@ -239,19 +243,19 @@ func TestPeerConnection(t *testing.T) {
 			})
 
 			Convey("DataChannel", func() {
-				channel, err := alice.CreateDataChannel("test", Init{})
+				channel, err := alice.CreateDataChannel("test")
 				So(channel, ShouldNotBeNil)
 				So(err, ShouldBeNil)
 				So(channel.Label(), ShouldEqual, "test")
-				channel.Close()
+				alice.DeleteDataChannel(channel)
 			})
 
-			Convey("Close PeerConnections.", func() {
+			Convey("Destroy PeerConnections.", func() {
 				success := make(chan int, 1)
 				go func() {
-					// err = alice.Close()
+					// err = alice.Destroy()
 					// So(err, ShouldBeNil)
-					err = bob.Close()
+					err = bob.Destroy()
 					// So(err, ShouldBeNil)
 					success <- 1
 				}()

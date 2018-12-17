@@ -32,6 +32,7 @@ package webrtc
 /*
 #cgo CXXFLAGS: -std=c++0x
 #cgo LDFLAGS: -L${SRCDIR}/lib
+#cgo linux,arm pkg-config: webrtc-linux-arm.pc
 #cgo linux,386 pkg-config: webrtc-linux-386.pc
 #cgo linux,amd64 pkg-config: webrtc-linux-amd64.pc
 #cgo darwin,amd64 pkg-config: webrtc-darwin-amd64.pc
@@ -42,6 +43,7 @@ package webrtc
 import "C"
 import (
 	"errors"
+	"fmt"
 	"unsafe"
 )
 
@@ -63,11 +65,14 @@ const (
 	PeerConnectionStateFailed
 )
 
-var PeerConnectionStateString = []string{
-	"New", "Connecting", "Connected", "Disconnected", "Failed"}
-
 func (s PeerConnectionState) String() string {
-	return EnumToStringSafe(int(s), PeerConnectionStateString)
+	return EnumToStringSafe(int(s), []string{
+		"New",
+		"Connecting",
+		"Connected",
+		"Disconnected",
+		"Failed",
+	})
 }
 
 const (
@@ -80,12 +85,16 @@ const (
 	IceConnectionStateClosed
 )
 
-var IceConnectionStateString = []string{
-	"New", "Checking", "Connected", "Completed",
-	"Failed", "Disconnected", "Closed"}
-
 func (s IceConnectionState) String() string {
-	return EnumToStringSafe(int(s), IceConnectionStateString)
+	return EnumToStringSafe(int(s), []string{
+		"New",
+		"Checking",
+		"Connected",
+		"Completed",
+		"Failed",
+		"Disconnected",
+		"Closed",
+	})
 }
 
 const (
@@ -94,11 +103,12 @@ const (
 	IceGatheringStateComplete
 )
 
-var IceGatheringStateString = []string{
-	"New", "Gathering", "Complete"}
-
 func (s IceGatheringState) String() string {
-	return EnumToStringSafe(int(s), IceGatheringStateString)
+	return EnumToStringSafe(int(s), []string{
+		"New",
+		"Gathering",
+		"Complete",
+	})
 }
 
 var PCMap = NewCGOMap()
@@ -156,6 +166,13 @@ func NewPeerConnection(config *Configuration) (*PeerConnection, error) {
 	}
 	INFO.Println("Created PeerConnection: ", pc, pc.cgoPeer)
 	return pc, nil
+}
+
+func (pc *PeerConnection) Destroy() error {
+	err := pc.Close()
+	PCMap.Delete(pc.index)
+	C.CGO_DestroyPeer(pc.cgoPeer)
+	return err
 }
 
 //
@@ -305,8 +322,9 @@ func (pc *PeerConnection) GetConfiguration() Configuration {
 func (pc *PeerConnection) SetConfiguration(config Configuration) error {
 	cConfig := config._CGO()
 	defer freeConfig(cConfig)
-	if 0 != C.CGO_SetConfiguration(pc.cgoPeer, cConfig) {
-		return errors.New("PeerConnection: could not set configuration.")
+	err := C.CGO_SetConfiguration(pc.cgoPeer, cConfig)
+	if err != 0 {
+		return errors.New(fmt.Sprintf("PeerConnection: could not set configuration. Error ID: %d", err))
 	}
 	pc.config = config
 	return nil
@@ -326,20 +344,81 @@ Once the connection succeeds, .OnDataChannel should trigger on the remote peer's
 |PeerConnection|, while .OnOpen should trigger on the local DataChannel returned
 by this method. Both DataChannel references should then be open and ready to
 exchange data.
-
-TODO: Implement the "negotiated" flag?
 */
-func (pc *PeerConnection) CreateDataChannel(label string, dict Init) (
+
+// Ordered configures a DataChannels 'ordered' option.
+func Ordered(ordered bool) func(*DataChannelInit) {
+	return func(i *DataChannelInit) {
+		i.Ordered = ordered
+	}
+}
+
+// MaxPacketLifeTime configures a DataChannels 'maxRetransmitTime' option.
+func MaxPacketLifeTime(maxPacketLifeTime int) func(*DataChannelInit) {
+	return func(i *DataChannelInit) {
+		i.MaxPacketLifeTime = maxPacketLifeTime
+	}
+}
+
+// MaxRetransmits configures a DataChannels 'maxRetransmits' option.
+func MaxRetransmits(maxRetransmits int) func(*DataChannelInit) {
+	return func(i *DataChannelInit) {
+		i.MaxRetransmits = maxRetransmits
+	}
+}
+
+// Negotiated configures a DataChannels 'negotiated' option.
+func Negotiated(negotiated bool) func(*DataChannelInit) {
+	return func(i *DataChannelInit) {
+		i.Negotiated = negotiated
+	}
+}
+
+func (pc *PeerConnection) CreateDataChannel(label string, options ...func(*DataChannelInit)) (
 	*DataChannel, error) {
+
+	// These are the defaults taken from include/webrtc/api/datachannelinterface.h
+	init := DataChannelInit{
+		Ordered:           true,
+		MaxPacketLifeTime: -1,
+		MaxRetransmits:    -1,
+		Negotiated:        false,
+		ID:                -1,
+	}
+
+	for _, option := range options {
+		option(&init)
+	}
+
+	cfg := C.CGO_DataChannelInit{}
+	cfg.ordered = 1
+	if init.Ordered == false {
+		cfg.ordered = 0
+	}
+	cfg.negotiated = 0
+	if init.Negotiated == true {
+		cfg.negotiated = 1
+	}
+	cfg.id = C.int(init.ID)
+	cfg.maxRetransmits = C.int(init.MaxRetransmits)
+	cfg.maxPacketLifeTime = C.int(init.MaxPacketLifeTime)
+
 	l := C.CString(label)
 	defer C.free(unsafe.Pointer(l))
-	cDataChannel := C.CGO_CreateDataChannel(pc.cgoPeer, l, unsafe.Pointer(&dict))
+	cDataChannel := C.CGO_CreateDataChannel(pc.cgoPeer, l, cfg)
 	if nil == cDataChannel {
 		return nil, errors.New("Failed to CreateDataChannel")
 	}
 	// Provide internal Data Channel as reference to create the Go wrapper.
 	dc := NewDataChannel(unsafe.Pointer(cDataChannel))
 	return dc, nil
+}
+
+func (pc *PeerConnection) DeleteDataChannel(dc *DataChannel) {
+	dc.Close()
+	C.CGO_DeleteDataChannel(pc.cgoPeer, dc.cgoChannelObserver)
+	deleteDataChannel(dc.index)
+	return
 }
 
 func (pc *PeerConnection) Close() error {
@@ -353,7 +432,7 @@ func (pc *PeerConnection) Close() error {
 
 //export cgoOnSignalingStateChange
 func cgoOnSignalingStateChange(p int, s SignalingState) {
-	INFO.Println("fired OnSignalingStateChange: ", p, s, s.String())
+	INFO.Println("fired OnSignalingStateChange: ", p, s)
 	pc := PCMap.Get(p).(*PeerConnection)
 	if nil != pc.OnSignalingStateChange {
 		pc.OnSignalingStateChange(s)

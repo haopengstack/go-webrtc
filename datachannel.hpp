@@ -2,9 +2,10 @@
 #define _DATACHANNEL_H_
 
 #include <_cgo_export.h>  // Allow calling certain Go functions.
+#include <assert.h>
 
-#include "webrtc/api/peerconnectioninterface.h"
-#include "webrtc/api/datachannelinterface.h"
+#include "api/peerconnectioninterface.h"
+#include "api/datachannelinterface.h"
 
 typedef rtc::scoped_refptr<webrtc::DataChannelInterface> DataChannel;
 
@@ -35,7 +36,9 @@ class CGoDataChannelObserver
   DataChannel dc;
 
  protected:
-  ~CGoDataChannelObserver() {}
+  ~CGoDataChannelObserver() {
+    dc->UnregisterObserver();
+  }
 };  // class DoDataChannelObserver
 
 #endif  // _DATACHANNEL_H
